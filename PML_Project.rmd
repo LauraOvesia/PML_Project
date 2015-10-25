@@ -1,0 +1,183 @@
+---
+title: "Practical Machine Learning-Writeup"
+output: html_document
+date: "October, 2015"
+---
+
+
+## Synopsis
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. 
+These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, 
+to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do,
+but they rarely quantify how well they do it. 
+In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell 
+lifts correctly and incorrectly in 5 different ways. 
+
+More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+Data 
+The training data for this project are available here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. 
+
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set 
+which classifies the outcomes into one of the categories A, B, C, D, or E.
+
+##Retrieve  and clean data
+1. Download data
+2. Read csv file
+
+```{r cache = TRUE, echo=TRUE}
+training <- read.csv("pml-training.csv")
+testing<- read.csv("pml-testing.csv")
+```
+
+Show Data Structure
+```{r}
+str(training, list.len=20)
+dim(training)
+```
+Looking at the data will show that the first 6 columns are used just for information, so will will remove the first 6 columns from the training and testing databases.
+```{r cache = TRUE, echo=TRUE}
+training <- training[, 7:160]
+testing  <- testing[, 7:160]
+```
+Will clean up the training data and will consider empty fields and NA  as NA. 
+```{r cache = TRUE, echo=TRUE}
+na_test = sapply(training, function(x) {sum(is.na(x)|x == "")})
+table(na_test)
+columns_to_remove = names(na_test[na_test==19216])
+training = training[, !names(training) %in% columns_to_remove]
+dim(training)
+```
+Will clean up the testing data to have the same data stucture.
+```{r cache = TRUE, echo=TRUE}
+cleanTraining <- colnames(training[, -54])
+testing <- testing[cleanTraining]       
+dim(testing)
+```
+
+## Data Processing
+Load necessary libraries
+```{r, message=F, warning=F}
+library(lattice)
+library(ggplot2)
+library(caret)
+library(rpart.plot)
+library(randomForest)
+```
+To do the proper data analysis, we split the training set into two randomly subsampled for cross validation purposes. The first subset for model building will be 60% and  the second subset 40% will be used for evaluation and accuracy measurement.
+```{r cache = TRUE, echo=TRUE}
+set.seed(12345)
+inTrain <- createDataPartition(y=training$classe, p=0.6, list=FALSE)
+myTrain <- training[inTrain,]
+myTest <- training[-inTrain,]
+dim(myTrain)
+dim(myTest)
+```
+We will remove the zero covariates from training databases.
+```{r cache = TRUE, echo=TRUE}
+zero_cov_cols <- nearZeroVar(myTrain)
+if(length(zero_cov_cols) > 0) {
+myTrain <- myTrain[, -zero_cov_cols]
+myTest <- myTest[, -zero_cov_cols]
+}
+```
+
+## Data Manipulation
+We will try to use multiple models and determine which one will be the best for this case.
+The first one that we will try to use is the tree model and we will calculate the model accuracy using the confusionMatrix function. 
+```{r cache = TRUE, echo=TRUE}
+rpartModel <- rpart(classe~., data=myTrain, method="class")
+prp(rpartModel)
+predictionsTree <- predict(rpartModel, myTest, type = "class")
+confusionMatrixTree <- confusionMatrix(predictionsTree, myTest$classe)
+confusionMatrixTree
+
+plot(confusionMatrixTree$table, col = confusionMatrixTree$byClass, main = paste("Decision Tree Confusion Matrix: Accuracy =", round(confusionMatrixTree$overall['Accuracy'], 4)))
+
+```
+
+The second model that we will use is the Random Forest and we will calculate the model accuracy using the confusionMatrix function. 
+
+```{r cache = TRUE, echo=TRUE}
+set.seed(12345)
+randomForestModel <- randomForest(classe ~ ., data=myTrain)
+predictionsRandomForest <- predict(randomForestModel, myTest, type = "class")
+confusionMatrixRF <- confusionMatrix(predictionsRandomForest, myTest$classe)
+confusionMatrixRF
+plot(confusionMatrixRF$table, col = confusionMatrixRF$byClass, main = paste("Random Forest Confusion Matrix: Accuracy =", round(confusionMatrixRF$overall['Accuracy'], 4)))
+
+
+```
+
+## Selected Data Model
+Based on the accuracy results from the previous calculations for both Decision Tree and Random Forest algorithms we will select the Random Forest algorithm and we will use the train() function from caret library to generate the final used model.
+
+Beacuse the train function is using a lot of computer power processing, we will save the model into a file, that can be used later.
+
+```{r cache = TRUE, echo=TRUE}
+set.seed(12345)
+finalModel <- train(classe~.,
+                  data=myTrain,
+                  method="rf",
+                  trControl=trainControl(method="cv",number=2),
+                  prox=TRUE,
+                  verbose=TRUE,
+                  allowParallel=TRUE)
+
+saveRDS(finalModel, "finalModelPML.Rds")
+
+finalPredictions <- predict(finalModel, newdata=myTest)
+confusionMatrixFinal <- confusionMatrix(finalPredictions, myTest$classe)
+confusionMatrixFinal
+```
+
+##Cross validation and estimation of the out-of-sample error rate
+
+Until now we didn't use the myTest subset in any predictions. We will use the myTest dataset as an input for cross validation and we will calculate the out-of-sample error rate.
+
+The estimate out-of-sample error rate for the Random Forest algorithm can be calculated using the formula (100-Accuracy rate). 
+
+In our case the value will be 0.31%
+
+The code to calculate the out-of-sample error rate is
+
+```{r}
+
+calculate_OOS_error_rate = function(values, predicted) {
+  sum(predicted != values) / length(values)
+}
+
+OOS_error_Rate = calculate_OOS_error_rate(myTest$classe, finalPredictions)
+OOS_error_Rate 
+
+```
+
+From the above numbers and calculations the expected and calculated out-of-sample error rates are close.
+
+##Project Submissions
+
+We will predict the classification of the observations of the testing data and generate the response files. The files will be manualy submited.
+
+```{r}
+predictionSubmission <- predict(finalModel, newdata=testing)
+testing$classe <- predictionSubmission
+answers = testing$classe
+
+answers
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(answers)
+
+```
